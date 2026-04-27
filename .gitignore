@@ -1,0 +1,12 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+mosquitto/data/
+mosquitto/log/
+ml-model/artifacts/
+frontend/node_modules/
+frontend/build/
+ingestion/node_modules/
+alerts/node_modules/
+.venv/

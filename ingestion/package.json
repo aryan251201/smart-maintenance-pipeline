@@ -1,0 +1,10 @@
+{
+  "name": "iot-ingestion",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "mqtt": "^5.0.0",
+    "pg": "^8.11.0"
+  }
+}
