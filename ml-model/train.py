@@ -4,22 +4,25 @@ import os
 import sys
 
 import joblib
+import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import classification_report
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.metrics import classification_report, mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sqlalchemy import create_engine
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_USER = os.getenv("DB_USER", "iot")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "iotpass")
-DB_NAME = os.getenv("DB_NAME", "iot_data")
+DB_HOST = os.environ["DB_HOST"]
+DB_PORT = os.environ["DB_PORT"]
+DB_USER = os.environ["DB_USER"]
+DB_PASSWORD = os.environ["DB_PASSWORD"]
+DB_NAME = os.environ["DB_NAME"]
 
 ARTIFACT_DIR = "/app/artifacts"
 MODEL_PATH = os.path.join(ARTIFACT_DIR, "model.joblib")
+TTF_MODEL_PATH = os.path.join(ARTIFACT_DIR, "ttf_model.joblib")
 FEATURE_COLS_PATH = os.path.join(ARTIFACT_DIR, "feature_cols.joblib")
 
+INTERVAL = int(os.getenv("PUBLISH_INTERVAL", "5"))
 WINDOW_SIZES = [5, 10, 20]
 LAG_STEPS = [1, 3, 5, 10]
 
@@ -36,6 +39,9 @@ def load_data() -> pd.DataFrame:
 
 
 def pivot_metrics(raw: pd.DataFrame) -> pd.DataFrame:
+    raw = raw.copy()
+    raw["time"] = raw["time"].dt.floor("s")
+
     pivoted = raw.pivot_table(
         index=["time", "device_id"],
         columns="metric",
@@ -72,8 +78,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def label_prefailure(df: pd.DataFrame, lookahead: int = 10) -> pd.DataFrame:
-    """Label rows within `lookahead` ticks before a failure as positive."""
+    """Label rows within `lookahead` ticks before a failure as positive.
+    Also computes ticks_to_failure for regression (NaN for normal rows)."""
     df["label"] = 0
+    df["ticks_to_failure"] = np.nan
     for device in df["device_id"].unique():
         mask = df["device_id"] == device
         device_df = df.loc[mask]
@@ -81,6 +89,8 @@ def label_prefailure(df: pd.DataFrame, lookahead: int = 10) -> pd.DataFrame:
         for idx in failure_idxs:
             start = max(idx - lookahead, device_df.index[0])
             df.loc[start:idx, "label"] = 1
+            for i in range(start, idx + 1):
+                df.loc[i, "ticks_to_failure"] = idx - i
     return df
 
 
@@ -90,7 +100,7 @@ def train():
 
     feature_cols = [
         c for c in df.columns
-        if c not in ["time", "device_id", "failure", "label"]
+        if c not in ["time", "device_id", "failure", "label", "ticks_to_failure"]
     ]
 
     X = df[feature_cols]
@@ -108,8 +118,8 @@ def train():
         X, y, test_size=0.2, shuffle=False
     )
 
-    model = GradientBoostingClassifier(
-        n_estimators=200,
+    model = HistGradientBoostingClassifier(
+        max_iter=200,
         max_depth=4,
         learning_rate=0.1,
         min_samples_leaf=10,
@@ -117,17 +127,43 @@ def train():
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
-    print("\n--- Test Set Performance ---")
+    print("\n--- Classification Performance ---")
     print(classification_report(y_test, y_pred, zero_division=0))
+
+    # --- Time-to-failure regression model (trained only on pre-failure rows) ---
+    prefail = df[df["label"] == 1].copy()
+    X_ttf = prefail[feature_cols]
+    y_ttf = prefail["ticks_to_failure"]
+
+    X_ttf_train, X_ttf_test, y_ttf_train, y_ttf_test = train_test_split(
+        X_ttf, y_ttf, test_size=0.2, shuffle=False
+    )
+
+    ttf_model = HistGradientBoostingRegressor(
+        max_iter=200,
+        max_depth=4,
+        learning_rate=0.1,
+        min_samples_leaf=10,
+    )
+    ttf_model.fit(X_ttf_train, y_ttf_train)
+
+    y_ttf_pred = ttf_model.predict(X_ttf_test)
+    mae = mean_absolute_error(y_ttf_test, y_ttf_pred)
+    print(f"\n--- Time-to-Failure Regression ---")
+    print(f"MAE: {mae:.2f} ticks ({mae * INTERVAL:.0f} seconds)")
 
     os.makedirs(ARTIFACT_DIR, exist_ok=True)
     joblib.dump(model, MODEL_PATH)
+    joblib.dump(ttf_model, TTF_MODEL_PATH)
     joblib.dump(feature_cols, FEATURE_COLS_PATH)
-    print(f"Model saved to {MODEL_PATH}")
+    print(f"\nClassifier saved to {MODEL_PATH}")
+    print(f"TTF regressor saved to {TTF_MODEL_PATH}")
     print(f"Feature columns saved to {FEATURE_COLS_PATH}")
 
+    from sklearn.inspection import permutation_importance
+    perm = permutation_importance(model, X_test, y_test, n_repeats=5, random_state=42)
     importances = sorted(
-        zip(feature_cols, model.feature_importances_), key=lambda x: -x[1]
+        zip(feature_cols, perm.importances_mean), key=lambda x: -x[1]
     )
     print("\n--- Top 10 Features ---")
     for name, imp in importances[:10]:

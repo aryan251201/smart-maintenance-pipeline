@@ -4,8 +4,8 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "${MQTT_PORT:-1883}:1883"
+      - "${MQTT_WS_PORT:-9001}:9001"
     volumes:
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/data:/mosquitto/data
@@ -15,11 +15,11 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg15
     environment:
-      POSTGRES_USER: ${DB_USER:-iot}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-iotpass}
-      POSTGRES_DB: ${DB_NAME:-iot_data}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
       - ./timescaledb/init:/docker-entrypoint-initdb.d
@@ -45,9 +45,9 @@ services:
       MQTT_PORT: 1883
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_USER: ${DB_USER:-iot}
-      DB_PASSWORD: ${DB_PASSWORD:-iotpass}
-      DB_NAME: ${DB_NAME:-iot_data}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
     restart: unless-stopped
 
   ml-model:
@@ -57,24 +57,24 @@ services:
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_USER: ${DB_USER:-iot}
-      DB_PASSWORD: ${DB_PASSWORD:-iotpass}
-      DB_NAME: ${DB_NAME:-iot_data}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
     volumes:
       - model_artifacts:/app/artifacts
 
   model-api:
     build: ./model-api
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
       - timescaledb
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_USER: ${DB_USER:-iot}
-      DB_PASSWORD: ${DB_PASSWORD:-iotpass}
-      DB_NAME: ${DB_NAME:-iot_data}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
     volumes:
       - model_artifacts:/app/artifacts
     restart: unless-stopped
@@ -82,11 +82,11 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - model-api
     environment:
-      REACT_APP_API_URL: http://localhost:8000
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     restart: unless-stopped
 
   alerts:
@@ -97,9 +97,9 @@ services:
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_USER: ${DB_USER:-iot}
-      DB_PASSWORD: ${DB_PASSWORD:-iotpass}
-      DB_NAME: ${DB_NAME:-iot_data}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
       MODEL_API_URL: http://model-api:8000
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
